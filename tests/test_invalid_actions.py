@@ -11,7 +11,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from sb3_contrib import MaskablePPO
+from sb3_contrib import MaskablePPO, MaskableRecurrentPPO
 from sb3_contrib.common.envs import InvalidActionEnvDiscrete, InvalidActionEnvMultiBinary, InvalidActionEnvMultiDiscrete
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.maskable.evaluation import evaluate_policy
@@ -276,3 +276,10 @@ def test_dict_obs():
     env = ToDictWrapper(env)
     model = MaskablePPO("MultiInputPolicy", env, n_steps=32, seed=8)
     model.learn(32)
+
+
+def test_maskable_recurrent_ppo():
+    env = InvalidActionEnvDiscrete(dim=20, n_invalid_actions=10)
+    model = MaskableRecurrentPPO("MlpLstmPolicy", env, n_steps=16, seed=0)
+    model.learn(32)
+    evaluate_policy(model, env, warn=False)
