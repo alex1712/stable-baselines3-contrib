@@ -287,11 +287,11 @@ class RecurrentMaskableRolloutBuffer(RolloutBuffer):
             lstm_states=RNNStates(lstm_states_pi, lstm_states_vf),
             episode_starts=self.pad_and_flatten(self.episode_starts[batch_inds]),
             mask=self.pad_and_flatten(np.ones_like(self.returns[batch_inds])),
-            action_masks=self.action_masks[batch_inds].reshape(-1, self.mask_dims),
+            action_masks=self.to_torch(self.action_masks[batch_inds].reshape(-1, self.mask_dims)),
         )
 
 
-class RecurrentDictRolloutBuffer(DictRolloutBuffer):
+class RecurrentMaskableDictRolloutBuffer(DictRolloutBuffer):
     """
     Dict Rollout buffer used in on-policy algorithms like A2C/PPO.
     Extends the RecurrentRolloutBuffer to use dictionary observations
@@ -306,6 +306,8 @@ class RecurrentDictRolloutBuffer(DictRolloutBuffer):
     :param gamma: Discount factor
     :param n_envs: Number of parallel environments
     """
+
+    action_masks: np.ndarray
 
     def __init__(
         self,

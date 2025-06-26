@@ -12,10 +12,9 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
 from stable_baselines3.common.vec_env import VecEnv
 
-from sb3_contrib.common.recurrent.buffers import RecurrentDictRolloutBuffer, RecurrentRolloutBuffer
-from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
-from sb3_contrib.common.recurrent.type_aliases import RNNStates
-from sb3_contrib.ppo_recurrent.policies import CnnLstmPolicy, MlpLstmPolicy, MultiInputLstmPolicy
+from sb3_contrib.common.recurrent_maskable.buffers import RecurrentMaskableDictRolloutBuffer, RecurrentMaskableRolloutBuffer
+from sb3_contrib.common.recurrent_maskable.policies import RecurrentMaskableActorCriticPolicy, RNNStates
+from sb3_contrib.ppo_recurrent_mask.policies import CnnLstmMaskPolicy, MlpLstmMaskPolicy, MultiInputLstmMaskPolicy
 
 SelfRecurrentMaskablePPO = TypeVar("SelfRecurrentMaskablePPO", bound="RecurrentMaskablePPO")
 
@@ -23,14 +22,14 @@ SelfRecurrentMaskablePPO = TypeVar("SelfRecurrentMaskablePPO", bound="RecurrentM
 class RecurrentMaskablePPO(OnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
-    with support for recurrent policies (LSTM).
+    with support for recurrent policies (LSTM) and with Invalid Action Masking.
 
     Based on the original Stable Baselines 3 implementation.
 
     Introduction to PPO: https://spinningup.openai.com/en/latest/algorithms/ppo.html
     Background on Invalid Action Masking: https://arxiv.org/abs/2006.14171
 
-    :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
+    :param policy: The policy model to use (CnnLstmMaskPolicy, MlpLstmMaskPolicy, ...)
     :param env: The environment to learn from (if registered in Gym, can be str)
     :param learning_rate: The learning rate, it can be a function
         of the current progress remaining (from 1 to 0)
@@ -67,12 +66,12 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
     """
 
     policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
-        "MlpLstmPolicy": MlpLstmPolicy,
-        "CnnLstmPolicy": CnnLstmPolicy,
-        "MultiInputLstmPolicy": MultiInputLstmPolicy,
+        "MlpLstmPolicy": MlpLstmMaskPolicy,
+        "CnnLstmPolicy": CnnLstmMaskPolicy,
+        "MultiInputLstmPolicy": MultiInputLstmMaskPolicy,
     }
-    policy: MaskableActorCriticPolicy  # type: ignore[assignment]
-    rollout_buffer: MaskableRolloutBuffer  # type: ignore[assignment]
+    policy: RecurrentMaskableActorCriticPolicy  # type: ignore[assignment]
+    rollout_buffer: RecurrentMaskableRolloutBuffer  # type: ignore[assignment]
 
     def __init__(
         self,
@@ -113,6 +112,8 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
+            rollout_buffer_class=rollout_buffer_class,
+            rollout_buffer_kwargs=rollout_buffer_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
@@ -142,9 +143,13 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
-        buffer_cls = RecurrentDictRolloutBuffer if isinstance(self.observation_space, spaces.Dict) else RecurrentRolloutBuffer
+        buffer_cls = (
+            RecurrentMaskableDictRolloutBuffer
+            if isinstance(self.observation_space, spaces.Dict)
+            else RecurrentMaskableRolloutBuffer
+        )
 
-        self.policy = self.policy_class(
+        self.policy = self.policy_class(  # type: ignore[assignment]
             self.observation_space,
             self.action_space,
             self.lr_schedule,
@@ -184,6 +189,7 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
+            **self.rollout_buffer_kwargs,
         )
 
         # Initialize schedules for policy/value clipping
@@ -200,6 +206,7 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
         callback: BaseCallback,
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
+        use_masking: bool = True,
     ) -> bool:
         """
         Collect experiences using the current policy and fill a ``RolloutBuffer``.
@@ -211,11 +218,12 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
             (and at the beginning and end of the rollout)
         :param rollout_buffer: Buffer to fill with rollouts
         :param n_steps: Number of experiences to collect per environment
+        :param use_masking: Whether or not to use invalid action masks during training
         :return: True if function returned with at least `n_rollout_steps`
             collected, False if callback terminated rollout prematurely.
         """
         assert isinstance(
-            rollout_buffer, (RecurrentRolloutBuffer, RecurrentDictRolloutBuffer)
+            rollout_buffer, (RecurrentMaskableRolloutBuffer, RecurrentMaskableDictRolloutBuffer)
         ), f"{rollout_buffer} doesn't support recurrent policy"
 
         assert self._last_obs is not None, "No previous observation was provided"
@@ -223,10 +231,13 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
         self.policy.set_training_mode(False)
 
         n_steps = 0
+        action_masks = None
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
+        if use_masking and not is_masking_supported(env):
+            raise ValueError("Environment does not support action masking. Consider using ActionMasker wrapper")
 
         callback.on_rollout_start()
 
@@ -241,7 +252,12 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
                 # Convert to pytorch tensor or to TensorDict
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 episode_starts = th.tensor(self._last_episode_starts, dtype=th.float32, device=self.device)
-                actions, values, log_probs, lstm_states = self.policy.forward(obs_tensor, lstm_states, episode_starts)
+                # This is the only change related to invalid action masking
+                if use_masking:
+                    action_masks = get_action_masks(env)
+                    actions, values, log_probs, lstm_states = self.policy.forward(
+                        obs_tensor, lstm_states, episode_starts, action_masks=action_masks
+                    )
 
             actions = actions.cpu().numpy()
 
@@ -294,6 +310,7 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
                 values,
                 log_probs,
                 lstm_states=self._last_lstm_states,
+                action_masks=action_masks,
             )
 
             self._last_obs = new_obs
@@ -302,6 +319,9 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
 
         with th.no_grad():
             # Compute value for the last timestep
+            # Masking is not needed here, the choice of action doesn't matter.
+            # We only want the value of the current observation.
+
             episode_starts = th.tensor(dones, dtype=th.float32, device=self.device)
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device), lstm_states.vf, episode_starts)
 
@@ -310,6 +330,29 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
         callback.on_rollout_end()
 
         return True
+
+    def predict(  # type: ignore[override]
+        self,
+        observation: Union[np.ndarray, dict[str, np.ndarray]],
+        state: Optional[tuple[np.ndarray, ...]] = None,
+        episode_start: Optional[np.ndarray] = None,
+        deterministic: bool = False,
+        action_masks: Optional[np.ndarray] = None,
+    ) -> tuple[np.ndarray, Optional[tuple[np.ndarray, ...]]]:
+        """
+        Get the policy action from an observation (and optional hidden state).
+        Includes sugar-coating to handle different observations (e.g. normalizing images).
+
+        :param observation: the input observation
+        :param state: The last hidden states (can be None, used in recurrent policies)
+        :param episode_start: The last masks (can be None, used in recurrent policies)
+            this correspond to beginning of episodes,
+            where the hidden states of the RNN must be reset.
+        :param deterministic: Whether or not to return deterministic actions.
+        :return: the model's action and the next hidden state
+            (used in recurrent policies)
+        """
+        return self.policy.predict(observation, state, episode_start, deterministic, action_masks=action_masks)
 
     def train(self) -> None:
         """
@@ -349,6 +392,7 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
                     actions,
                     rollout_data.lstm_states,
                     rollout_data.episode_starts,
+                    action_masks=rollout_data.action_masks,
                 )
 
                 values = values.flatten()
@@ -441,22 +485,48 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def learn(
-        self: SelfRecurrentPPO,
+        self: SelfRecurrentMaskablePPO,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
-        tb_log_name: str = "RecurrentPPO",
+        tb_log_name: str = "RecurrentMaskablePPO",
         reset_num_timesteps: bool = True,
+        use_masking: bool = True,
         progress_bar: bool = False,
-    ) -> SelfRecurrentPPO:
-        return super().learn(
-            total_timesteps=total_timesteps,
-            callback=callback,
-            log_interval=log_interval,
-            tb_log_name=tb_log_name,
-            reset_num_timesteps=reset_num_timesteps,
-            progress_bar=progress_bar,
+    ) -> SelfRecurrentMaskablePPO:
+        iteration = 0
+
+        total_timesteps, callback = self._setup_learn(
+            total_timesteps,
+            callback,
+            reset_num_timesteps,
+            tb_log_name,
+            progress_bar,
         )
+
+        callback.on_training_start(locals(), globals())
+
+        assert self.env is not None
+
+        while self.num_timesteps < total_timesteps:
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps, use_masking)
+
+            if not continue_training:
+                break
+
+            iteration += 1
+            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+            # Display training infos
+            if log_interval is not None and iteration % log_interval == 0:
+                assert self.ep_info_buffer is not None
+                self.dump_logs(iteration)
+
+            self.train()
+
+        callback.on_training_end()
+
+        return self
 
     def _excluded_save_params(self) -> list[str]:
         return super()._excluded_save_params() + ["_last_lstm_states"]  # noqa: RUF005

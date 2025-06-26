@@ -1,9 +1,9 @@
-from sb3_contrib.common.RecurrentMaskable.policies import (
+from sb3_contrib.common.recurrent_maskable.policies import (
     RecurrentMaskableActorCriticCnnPolicy,
     RecurrentMaskableActorCriticPolicy,
     RecurrentMaskableMultiInputActorCriticPolicy,
 )
 
-MlpLstmPolicy = RecurrentMaskableActorCriticPolicy
-CnnLstmPolicy = RecurrentMaskableActorCriticCnnPolicy
-MultiInputLstmPolicy = RecurrentMaskableMultiInputActorCriticPolicy
+MlpLstmMaskPolicy = RecurrentMaskableActorCriticPolicy
+CnnLstmMaskPolicy = RecurrentMaskableActorCriticCnnPolicy
+MultiInputLstmMaskPolicy = RecurrentMaskableMultiInputActorCriticPolicy

@@ -269,6 +269,7 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
         obs: th.Tensor,
         lstm_states: tuple[th.Tensor, th.Tensor],
         episode_starts: th.Tensor,
+        action_masks: Optional[np.ndarray] = None,
     ) -> tuple[Distribution, tuple[th.Tensor, ...]]:
         """
         Get the current policy distribution given the observations.
@@ -277,13 +278,17 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
         :param lstm_states: The last hidden and memory states for the LSTM.
         :param episode_starts: Whether the observations correspond to new episodes
             or not (we reset the lstm states in that case).
+        :param action_masks: Actions' mask
         :return: the action distribution and new hidden states.
         """
         # Call the method from the parent of the parent class
         features = super(ActorCriticPolicy, self).extract_features(obs, self.pi_features_extractor)
         latent_pi, lstm_states = self._process_sequence(features, lstm_states, episode_starts, self.lstm_actor)
         latent_pi = self.mlp_extractor.forward_actor(latent_pi)
-        return self._get_action_dist_from_latent(latent_pi), lstm_states
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        if action_masks is not None:
+            distribution.apply_masking(action_masks)
+        return distribution, lstm_states
 
     def predict_values(
         self,
@@ -381,7 +386,7 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
         :param action_masks: Action masks to apply to the action distribution
         :return: Taken action according to the policy and hidden states of the RNN
         """
-        distribution, lstm_states = self.get_distribution(observation, lstm_states, episode_starts)
+        distribution, lstm_states = self.get_distribution(observation, lstm_states, episode_starts, action_masks)
         return distribution.get_actions(deterministic=deterministic), lstm_states
 
     def predict(
