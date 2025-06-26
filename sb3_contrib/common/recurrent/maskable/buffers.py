@@ -1,3 +1,4 @@
+from collections.abc import Generator
 from typing import Optional
 
 import numpy as np
@@ -35,6 +36,12 @@ class MaskableRecurrentRolloutBuffer(RecurrentRolloutBuffer):
             self.action_masks[self.pos] = action_masks.reshape((self.n_envs, self.mask_dims))
         super().add(*args, lstm_states=lstm_states, **kwargs)
 
+    def get(self, batch_size: Optional[int] = None) -> Generator[MaskableRecurrentRolloutBufferSamples, None, None]:
+        assert self.full
+        if not self.generator_ready:
+            self.action_masks = self.swap_and_flatten(self.action_masks)
+        yield from super().get(batch_size)
+
     def _get_samples(
         self,
         batch_inds: np.ndarray,
@@ -42,7 +49,8 @@ class MaskableRecurrentRolloutBuffer(RecurrentRolloutBuffer):
         env: Optional[VecNormalize] = None,
     ) -> MaskableRecurrentRolloutBufferSamples:
         data = super()._get_samples(batch_inds, env_change)
-        action_masks = th.as_tensor(self.action_masks[batch_inds], device=self.device).reshape(-1, self.mask_dims)
+        action_masks = self.pad(self.action_masks[batch_inds]).reshape(-1, self.mask_dims)
+        action_masks = th.as_tensor(action_masks, device=self.device)
         return MaskableRecurrentRolloutBufferSamples(
             observations=data.observations,
             actions=data.actions,
@@ -86,7 +94,8 @@ class MaskableRecurrentDictRolloutBuffer(RecurrentDictRolloutBuffer):
         env: Optional[VecNormalize] = None,
     ) -> MaskableRecurrentDictRolloutBufferSamples:
         data = super()._get_samples(batch_inds, env_change)
-        action_masks = th.as_tensor(self.action_masks[batch_inds], device=self.device).reshape(-1, self.mask_dims)
+        action_masks = self.pad(self.action_masks[batch_inds]).reshape(-1, self.mask_dims)
+        action_masks = th.as_tensor(action_masks, device=self.device)
         return MaskableRecurrentDictRolloutBufferSamples(
             observations=data.observations,
             actions=data.actions,

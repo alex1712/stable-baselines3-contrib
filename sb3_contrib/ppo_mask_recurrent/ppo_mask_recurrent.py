@@ -265,12 +265,56 @@ class MaskableRecurrentPPO(RecurrentPPO):
         use_masking: bool = True,
         progress_bar: bool = False,
     ) -> SelfMaskableRecurrentPPO:
-        return super().learn(
-            total_timesteps=total_timesteps,
-            callback=callback,
-            log_interval=log_interval,
-            tb_log_name=tb_log_name,
-            reset_num_timesteps=reset_num_timesteps,
-            use_masking=use_masking,
-            progress_bar=progress_bar,
+        iteration = 0
+
+        total_timesteps, callback = self._setup_learn(
+            total_timesteps,
+            callback,
+            reset_num_timesteps,
+            tb_log_name,
+            progress_bar,
+        )
+
+        callback.on_training_start(locals(), globals())
+
+        assert self.env is not None
+
+        while self.num_timesteps < total_timesteps:
+            continue_training = self.collect_rollouts(
+                self.env,
+                callback,
+                self.rollout_buffer,
+                self.n_steps,
+                use_masking,
+            )
+
+            if not continue_training:
+                break
+
+            iteration += 1
+            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+            if log_interval is not None and iteration % log_interval == 0:
+                self.dump_logs(iteration)
+
+            self.train()
+
+        callback.on_training_end()
+
+        return self
+
+    def predict(  # type: ignore[override]
+        self,
+        observation: Union[np.ndarray, dict[str, np.ndarray]],
+        state: Optional[tuple[np.ndarray, ...]] = None,
+        episode_start: Optional[np.ndarray] = None,
+        deterministic: bool = False,
+        action_masks: Optional[np.ndarray] = None,
+    ) -> tuple[np.ndarray, Optional[tuple[np.ndarray, ...]]]:
+        return self.policy.predict(
+            observation,
+            state,
+            episode_start,
+            deterministic,
+            action_masks=action_masks,
         )
