@@ -31,6 +31,15 @@ class MaskableRecurrentActorCriticPolicy(RecurrentActorCriticPolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         """Create the networks and the optimizer."""
+        if not isinstance(self.action_dist, MaskableDistribution):
+            # Called during parent initialization with the default distribution
+            # (e.g., ``DiagGaussian`` for continuous actions). Defer to the
+            # standard implementation so attributes like ``action_net`` are
+            # properly created.
+            from stable_baselines3.common.policies import ActorCriticPolicy
+
+            return ActorCriticPolicy._build(self, lr_schedule)
+
         self._build_mlp_extractor()
 
         self.action_net = self.action_dist.proba_distribution_net(latent_dim=self.mlp_extractor.latent_dim_pi)

@@ -8,6 +8,7 @@ import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import FloatSchedule, explained_variance, obs_as_tensor
 from stable_baselines3.common.vec_env import VecEnv
@@ -36,6 +37,71 @@ class MaskableRecurrentPPO(RecurrentPPO):
     }
     policy: MaskableRecurrentActorCriticPolicy  # type: ignore[assignment]
 
+    def __init__(
+        self,
+        policy: Union[str, type[MaskableRecurrentActorCriticPolicy]],
+        env: Union[GymEnv, str],
+        learning_rate: Union[float, Schedule] = 3e-4,
+        n_steps: int = 128,
+        batch_size: Optional[int] = 128,
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_range: Union[float, Schedule] = 0.2,
+        clip_range_vf: Union[None, float, Schedule] = None,
+        normalize_advantage: bool = True,
+        ent_coef: float = 0.0,
+        vf_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        use_sde: bool = False,
+        sde_sample_freq: int = -1,
+        target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
+        tensorboard_log: Optional[str] = None,
+        policy_kwargs: Optional[dict[str, Any]] = None,
+        verbose: int = 0,
+        seed: Optional[int] = None,
+        device: Union[th.device, str] = "auto",
+        _init_setup_model: bool = True,
+    ) -> None:
+        OnPolicyAlgorithm.__init__(
+            self,
+            policy,
+            env,
+            learning_rate=learning_rate,
+            n_steps=n_steps,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            ent_coef=ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
+            stats_window_size=stats_window_size,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs=policy_kwargs,
+            verbose=verbose,
+            seed=seed,
+            device=device,
+            _init_setup_model=False,
+            supported_action_spaces=(
+                spaces.Discrete,
+                spaces.MultiDiscrete,
+                spaces.MultiBinary,
+            ),
+        )
+
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
+        self.clip_range = clip_range
+        self.clip_range_vf = clip_range_vf
+        self.normalize_advantage = normalize_advantage
+        self.target_kl = target_kl
+        self._last_lstm_states = None
+
+        if _init_setup_model:
+            self._setup_model()
+
     def _setup_model(self) -> None:
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
@@ -54,6 +120,8 @@ class MaskableRecurrentPPO(RecurrentPPO):
             **self.policy_kwargs,
         )
         self.policy = self.policy.to(self.device)
+        if not isinstance(self.policy, MaskableRecurrentActorCriticPolicy):
+            raise ValueError("Policy must subclass MaskableRecurrentActorCriticPolicy")
 
         lstm = self.policy.lstm_actor
         single_hidden_state_shape = (lstm.num_layers, self.n_envs, lstm.hidden_size)
