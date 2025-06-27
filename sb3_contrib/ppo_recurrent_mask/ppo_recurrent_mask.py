@@ -254,9 +254,9 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
                 # This is the only change related to invalid action masking
                 if use_masking:
                     action_masks = get_action_masks(env)
-                    actions, values, log_probs, lstm_states = self.policy.forward(
-                        obs_tensor, lstm_states, episode_starts, action_masks=action_masks
-                    )
+                actions, values, log_probs, lstm_states = self.policy.forward(
+                    obs_tensor, lstm_states, episode_starts, action_masks=action_masks
+                )
 
             actions = actions.cpu().numpy()
 
