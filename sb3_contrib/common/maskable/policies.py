@@ -197,6 +197,36 @@ class MaskableActorCriticPolicy(BasePolicy):
             device=self.device,
         )
 
+    def evaluate_actions(
+        self,
+        obs: th.Tensor,
+        actions: th.Tensor,
+        action_masks: Optional[th.Tensor] = None,
+    ) -> tuple[th.Tensor, th.Tensor, Optional[th.Tensor]]:
+        """
+        Evaluate actions according to the current policy,
+        given the observations.
+
+        :param obs: Observation
+        :param actions: Actions
+        :return: estimated value, log likelihood of taking those actions
+            and entropy of the action distribution.
+        """
+        features = self.extract_features(obs)
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            pi_features, vf_features = features
+            latent_pi = self.mlp_extractor.forward_actor(pi_features)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        if action_masks is not None:
+            distribution.apply_masking(action_masks)
+        log_prob = distribution.log_prob(actions)
+        values = self.value_net(latent_vf)
+        return values, log_prob, distribution.entropy()
+
     def _build(self, lr_schedule: Schedule) -> None:
         """
         Create the networks and the optimizer.
@@ -320,36 +350,6 @@ class MaskableActorCriticPolicy(BasePolicy):
             actions = actions.squeeze(axis=0)
 
         return actions, state  # type: ignore[return-value]
-
-    def evaluate_actions(
-        self,
-        obs: th.Tensor,
-        actions: th.Tensor,
-        action_masks: Optional[th.Tensor] = None,
-    ) -> tuple[th.Tensor, th.Tensor, Optional[th.Tensor]]:
-        """
-        Evaluate actions according to the current policy,
-        given the observations.
-
-        :param obs: Observation
-        :param actions: Actions
-        :return: estimated value, log likelihood of taking those actions
-            and entropy of the action distribution.
-        """
-        features = self.extract_features(obs)
-        if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
-        else:
-            pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
-
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        if action_masks is not None:
-            distribution.apply_masking(action_masks)
-        log_prob = distribution.log_prob(actions)
-        values = self.value_net(latent_vf)
-        return values, log_prob, distribution.entropy()
 
     def get_distribution(self, obs: PyTorchObs, action_masks: Optional[np.ndarray] = None) -> MaskableDistribution:
         """
