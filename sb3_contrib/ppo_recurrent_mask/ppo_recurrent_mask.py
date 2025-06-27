@@ -10,6 +10,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
+from sb3_contrib.common.maskable.utils import get_action_masks, is_masking_supported
 from stable_baselines3.common.vec_env import VecEnv
 
 from sb3_contrib.common.recurrent_maskable.buffers import RecurrentMaskableDictRolloutBuffer, RecurrentMaskableRolloutBuffer
@@ -66,9 +67,9 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
     """
 
     policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
-        "MlpLstmPolicy": MlpLstmMaskPolicy,
-        "CnnLstmPolicy": CnnLstmMaskPolicy,
-        "MultiInputLstmPolicy": MultiInputLstmMaskPolicy,
+        "MlpLstmMaskPolicy": MlpLstmMaskPolicy,
+        "CnnLstmMaskPolicy": CnnLstmMaskPolicy,
+        "MultiInputLstmMaskPolicy": MultiInputLstmMaskPolicy,
     }
     policy: RecurrentMaskableActorCriticPolicy  # type: ignore[assignment]
     rollout_buffer: RecurrentMaskableRolloutBuffer  # type: ignore[assignment]
@@ -112,8 +113,6 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
-            rollout_buffer_class=rollout_buffer_class,
-            rollout_buffer_kwargs=rollout_buffer_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
             policy_kwargs=policy_kwargs,
@@ -509,7 +508,9 @@ class RecurrentMaskablePPO(OnPolicyAlgorithm):
         assert self.env is not None
 
         while self.num_timesteps < total_timesteps:
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps, use_masking)
+            continue_training = self.collect_rollouts(
+                self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps, use_masking=use_masking
+            )
 
             if not continue_training:
                 break

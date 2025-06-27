@@ -1,9 +1,9 @@
+from functools import partial
 from typing import Any, Optional, Union
 
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.distributions import Distribution
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
@@ -146,9 +146,45 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
             )
 
         self.action_dist = make_masked_proba_distribution(action_space)
+        self._build_mlp_extractor()
+
+        self.action_net = self.action_dist.proba_distribution_net(latent_dim=self.mlp_extractor.latent_dim_pi)
+        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
+
+        # Init weights: use orthogonal initialization
+        # with small initial weight for the output
+        if self.ortho_init:
+            # TODO: check for features_extractor
+            # Values from stable-baselines.
+            # features_extractor/mlp values are
+            # originally from openai/baselines (default gains/init_scales).
+            module_gains = {
+                self.features_extractor: np.sqrt(2),
+                self.mlp_extractor: np.sqrt(2),
+                self.action_net: 0.01,
+                self.value_net: 1,
+            }
+            if not self.share_features_extractor:
+                # Note(antonin): this is to keep SB3 results
+                # consistent, see GH#1148
+                del module_gains[self.features_extractor]
+                module_gains[self.pi_features_extractor] = np.sqrt(2)
+                module_gains[self.vf_features_extractor] = np.sqrt(2)
+
+            for module, gain in module_gains.items():
+                module.apply(partial(self.init_weights, gain=gain))
 
         # Setup optimizer with initial learning rate
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        self.optimizer = self.optimizer_class(
+            self.parameters(),
+            lr=lr_schedule(1),  # type: ignore[call-arg]
+            **self.optimizer_kwargs,
+        )
+
+        # Setup optimizer with initial learning rate
+        self.optimizer = self.optimizer_class(
+            self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs  # type: ignore[call-arg]
+        )
 
     def _build_mlp_extractor(self) -> None:
         """
@@ -161,57 +197,6 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
             activation_fn=self.activation_fn,
             device=self.device,
         )
-
-    @staticmethod
-    def _process_sequence(
-        features: th.Tensor,
-        lstm_states: tuple[th.Tensor, th.Tensor],
-        episode_starts: th.Tensor,
-        lstm: nn.LSTM,
-    ) -> tuple[th.Tensor, th.Tensor]:
-        """
-        Do a forward pass in the LSTM network.
-
-        :param features: Input tensor
-        :param lstm_states: previous hidden and cell states of the LSTM, respectively
-        :param episode_starts: Indicates when a new episode starts,
-            in that case, we need to reset LSTM states.
-        :param lstm: LSTM object.
-        :return: LSTM output and updated LSTM states.
-        """
-        # LSTM logic
-        # (sequence length, batch size, features dim)
-        # (batch size = n_envs for data collection or n_seq when doing gradient update)
-        n_seq = lstm_states[0].shape[1]
-        # Batch to sequence
-        # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
-        # note: max length (max sequence length) is always 1 during data collection
-        features_sequence = features.reshape((n_seq, -1, lstm.input_size)).swapaxes(0, 1)
-        episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
-
-        # If we don't have to reset the state in the middle of a sequence
-        # we can avoid the for loop, which speeds up things
-        if th.all(episode_starts == 0.0):
-            lstm_output, lstm_states = lstm(features_sequence, lstm_states)
-            lstm_output = th.flatten(lstm_output.transpose(0, 1), start_dim=0, end_dim=1)
-            return lstm_output, lstm_states
-
-        lstm_output = []
-        # Iterate over the sequence
-        for features, episode_start in zip_strict(features_sequence, episode_starts):
-            hidden, lstm_states = lstm(
-                features.unsqueeze(dim=0),
-                (
-                    # Reset the states at the beginning of a new episode
-                    (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[0],
-                    (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[1],
-                ),
-            )
-            lstm_output += [hidden]
-        # Sequence to batch
-        # (sequence length, n_seq, lstm_out_dim) -> (batch_size, lstm_out_dim)
-        lstm_output = th.flatten(th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1)
-        return lstm_output, lstm_states
 
     def forward(
         self,
@@ -270,7 +255,7 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
         lstm_states: tuple[th.Tensor, th.Tensor],
         episode_starts: th.Tensor,
         action_masks: Optional[np.ndarray] = None,
-    ) -> tuple[Distribution, tuple[th.Tensor, ...]]:
+    ) -> tuple[MaskableDistribution, tuple[th.Tensor, ...]]:
         """
         Get the current policy distribution given the observations.
 
@@ -321,7 +306,12 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
         return self.value_net(latent_vf)
 
     def evaluate_actions(
-        self, obs: th.Tensor, actions: th.Tensor, lstm_states: RNNStates, episode_starts: th.Tensor
+        self,
+        obs: th.Tensor,
+        actions: th.Tensor,
+        lstm_states: RNNStates,
+        episode_starts: th.Tensor,
+        action_masks: Optional[th.Tensor] = None,
     ) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
@@ -353,6 +343,8 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
         latent_vf = self.mlp_extractor.forward_critic(latent_vf)
 
         distribution = self._get_action_dist_from_latent(latent_pi)
+        if action_masks is not None:
+            distribution.apply_masking(action_masks)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
         return values, log_prob, distribution.entropy()
@@ -460,6 +452,57 @@ class RecurrentMaskableActorCriticPolicy(ActorCriticPolicy):
             actions = actions.squeeze(axis=0)
 
         return actions, states
+
+    @staticmethod
+    def _process_sequence(
+        features: th.Tensor,
+        lstm_states: tuple[th.Tensor, th.Tensor],
+        episode_starts: th.Tensor,
+        lstm: nn.LSTM,
+    ) -> tuple[th.Tensor, th.Tensor]:
+        """
+        Do a forward pass in the LSTM network.
+
+        :param features: Input tensor
+        :param lstm_states: previous hidden and cell states of the LSTM, respectively
+        :param episode_starts: Indicates when a new episode starts,
+            in that case, we need to reset LSTM states.
+        :param lstm: LSTM object.
+        :return: LSTM output and updated LSTM states.
+        """
+        # LSTM logic
+        # (sequence length, batch size, features dim)
+        # (batch size = n_envs for data collection or n_seq when doing gradient update)
+        n_seq = lstm_states[0].shape[1]
+        # Batch to sequence
+        # (padded batch size, features_dim) -> (n_seq, max length, features_dim) -> (max length, n_seq, features_dim)
+        # note: max length (max sequence length) is always 1 during data collection
+        features_sequence = features.reshape((n_seq, -1, lstm.input_size)).swapaxes(0, 1)
+        episode_starts = episode_starts.reshape((n_seq, -1)).swapaxes(0, 1)
+
+        # If we don't have to reset the state in the middle of a sequence
+        # we can avoid the for loop, which speeds up things
+        if th.all(episode_starts == 0.0):
+            lstm_output, lstm_states = lstm(features_sequence, lstm_states)
+            lstm_output = th.flatten(lstm_output.transpose(0, 1), start_dim=0, end_dim=1)
+            return lstm_output, lstm_states
+
+        lstm_output = []
+        # Iterate over the sequence
+        for features, episode_start in zip_strict(features_sequence, episode_starts):
+            hidden, lstm_states = lstm(
+                features.unsqueeze(dim=0),
+                (
+                    # Reset the states at the beginning of a new episode
+                    (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[0],
+                    (1.0 - episode_start).view(1, n_seq, 1) * lstm_states[1],
+                ),
+            )
+            lstm_output += [hidden]
+        # Sequence to batch
+        # (sequence length, n_seq, lstm_out_dim) -> (batch_size, lstm_out_dim)
+        lstm_output = th.flatten(th.cat(lstm_output).transpose(0, 1), start_dim=0, end_dim=1)
+        return lstm_output, lstm_states
 
 
 class RecurrentMaskableActorCriticCnnPolicy(RecurrentMaskableActorCriticPolicy):

@@ -199,7 +199,11 @@ def test_image_like_input(model_class, normalize_images):
         ),
         seed=1,
     )
-    policy = "CnnLstmPolicy" if model_class == RecurrentPPO else "CnnPolicy"
+    policy = "CnnPolicy"
+    if model_class == RecurrentPPO:
+        policy = "CnnLstmPolicy"
+    elif model_class == RecurrentMaskablePPO:
+        policy = "CnnLstmMaskPolicy"
 
     if model_class in {TRPO, MaskablePPO, RecurrentPPO, RecurrentMaskablePPO}:
         kwargs.update(dict(n_steps=64, batch_size=64))
