@@ -287,7 +287,9 @@ class RecurrentMaskableRolloutBuffer(RolloutBuffer):
             lstm_states=RNNStates(lstm_states_pi, lstm_states_vf),
             episode_starts=self.pad_and_flatten(self.episode_starts[batch_inds]),
             mask=self.pad_and_flatten(np.ones_like(self.returns[batch_inds])),
-            action_masks=self.to_torch(self.action_masks[batch_inds].reshape(-1, self.mask_dims)),
+            action_masks=self.to_torch(
+                self.pad(self.action_masks[batch_inds], padding_value=1.0).reshape(padded_batch_size, self.mask_dims)
+            ),
         )
 
 
@@ -452,5 +454,7 @@ class RecurrentMaskableDictRolloutBuffer(DictRolloutBuffer):
             lstm_states=RNNStates(lstm_states_pi, lstm_states_vf),
             episode_starts=self.pad_and_flatten(self.episode_starts[batch_inds]),
             mask=self.pad_and_flatten(np.ones_like(self.returns[batch_inds])),
-            action_masks=self.to_torch(self.action_masks[batch_inds].reshape(-1, self.mask_dims)),
+            action_masks=self.to_torch(
+                self.pad(self.action_masks[batch_inds], padding_value=1.0).reshape(padded_batch_size, self.mask_dims)
+            ),
         )
