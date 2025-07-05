@@ -30,6 +30,7 @@ See documentation for the full list of included features.
 - [PPO with invalid action masking (MaskablePPO)](https://arxiv.org/abs/2006.14171)
 - [PPO with recurrent policy (RecurrentPPO aka PPO LSTM)](https://ppo-details.cleanrl.dev//2021/11/05/ppo-implementation-details/)
 - [PPO with recurrent policy and invalid action masking (RecurrentMaskablePPO)](https://sb3-contrib.readthedocs.io/en/master/modules/ppo_recurrent_mask.html)
+- [RecurrentMaskablePPO with AMP (AMPRecurrentMaskablePPO)](https://sb3-contrib.readthedocs.io/en/master/modules/amp_recurrent_maskable_ppo.html)
 - [Truncated Quantile Critics (TQC)](https://arxiv.org/abs/2005.04269)
 - [Trust Region Policy Optimization (TRPO)](https://arxiv.org/abs/1502.05477)
 - [Batch Normalization in Deep Reinforcement Learning (CrossQ)](https://openreview.net/forum?id=PczQtTsTIX)
